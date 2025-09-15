@@ -2,6 +2,16 @@
 
 CUDA IPC + P2P one-sided reads for WAS.
 
+## Install
+```shell
+python -m pip install -v .
+```
+
+## Test
+```shell
+python -m pytest -q pytests
+```
+
 ## Quickstart
 ```python
 import torch, pywasipc
@@ -37,4 +47,4 @@ pywasipc.close_region(info)
 # ---------- Owner 清理 ----------
 # 全部 requester close 后：
 pywasipc.deregister_region(flat_buf.data_ptr())
-
+```
