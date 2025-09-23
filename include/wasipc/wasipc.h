@@ -47,9 +47,41 @@ cudaError_t read_async(const RegionInfo& src, void* dst_device,
                        uint64_t bytes, uint64_t src_off,
                        cudaStream_t stream);
 
+cudaError_t write_async(const void* src_device,
+                        const RegionInfo& dst,
+                        uint64_t bytes, uint64_t dst_off,
+                        cudaStream_t stream /* 可为0 */);
+
+struct WriteDesc {
+  const void* src;   // 本地 device 指针
+  uint64_t    bytes;
+  uint64_t    dst_off;
+  cudaStream_t stream; // 可为0；如为0则用同一个“默认流”
+};
+
+cudaError_t writev_async(const RegionInfo& dst,
+                         const WriteDesc* descs, int n);
+
 // 批量异步读取（减少 API 调用开销）
 struct ReadDesc { void* dst; uint64_t bytes, src_off; cudaStream_t stream; };
 cudaError_t readv_async(const RegionInfo& src, const ReadDesc* descs, int n);
+
+struct EventHandle {
+  cudaIpcEventHandle_t evt_handle;
+  int32_t abi_version;
+};
+
+/// 仅“owner”调用：创建可 IPC 的事件，并返回本地事件对象与 IPC 句柄
+cudaError_t create_event_ipc(bool disable_timing,
+                             cudaEvent_t* out_local_evt,
+                             EventHandle* out_handle);
+
+/// “peer”调用：用 IPC 句柄打开远端事件；返回可等待的 cudaEvent_t
+cudaError_t open_event_ipc(const EventHandle& h, cudaEvent_t* out_evt);
+
+/// 薄封装：在给定流上记录/等待事件（stream 可为 0 表示默认流）
+cudaError_t record_event(cudaEvent_t evt, cudaStream_t stream /* 可为0 */);
+cudaError_t stream_wait_event(cudaStream_t stream /* 可为0 */, cudaEvent_t evt);
 
 // -------- 辅助工具 --------
 bool can_access_peer(int requester_dev, int owner_dev);

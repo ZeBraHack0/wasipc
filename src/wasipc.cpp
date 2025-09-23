@@ -94,7 +94,81 @@ cudaError_t close_region(RegionInfo* info) {
   return st;
 }
 
-static inline bool range_ok(const RegionInfo& src, uint64_t off, uint64_t n) {
+static inline bool range_dst_ok(const RegionInfo& dst, uint64_t off, uint64_t n) {
+  if (off > dst.bytes) return false;
+  if (n > dst.bytes) return false;
+  if (off + n > dst.bytes) return false;
+  return true;
+}
+
+cudaError_t write_async(const void* src_device,
+                        const RegionInfo& dst,
+                        uint64_t bytes, uint64_t dst_off,
+                        cudaStream_t stream) {
+  if (!src_device || !dst.remote_ptr || bytes == 0) return cudaErrorInvalidValue;
+  if (!range_dst_ok(dst, dst_off, bytes)) return cudaErrorInvalidValue;
+  const char* src = static_cast<const char*>(src_device);
+  char*       dp  = static_cast<char*>(dst.remote_ptr);
+  return cudaMemcpyAsync(dp + dst_off, src, bytes,
+                         cudaMemcpyDeviceToDevice, stream);
+}
+
+cudaError_t writev_async(const RegionInfo& dst,
+                         const WriteDesc* descs, int n) {
+  if (!dst.remote_ptr || !descs || n <= 0) return cudaErrorInvalidValue;
+  for (int i = 0; i < n; ++i) {
+    auto st = write_async(descs[i].src, dst,
+                          descs[i].bytes, descs[i].dst_off,
+                          descs[i].stream);
+    if (st != cudaSuccess) return st;
+  }
+  return cudaSuccess;
+}
+
+// ---- 事件 IPC ----
+cudaError_t create_event_ipc(bool disable_timing,
+                             cudaEvent_t* out_local_evt,
+                             EventHandle* out_handle) {
+  if (!out_local_evt || !out_handle) return cudaErrorInvalidValue;
+  unsigned int flags = cudaEventInterprocess;
+  if (disable_timing) flags |= cudaEventDisableTiming;
+
+  cudaEvent_t evt;
+  auto st = cudaEventCreateWithFlags(&evt, flags);
+  if (st != cudaSuccess) return st;
+
+  cudaIpcEventHandle_t eh{};
+  st = cudaIpcGetEventHandle(&eh, evt);
+  if (st != cudaSuccess) {
+    cudaEventDestroy(evt);
+    return st;
+  }
+
+  *out_local_evt = evt;
+  out_handle->evt_handle = eh;
+  out_handle->abi_version = 1;
+  return cudaSuccess;
+}
+
+cudaError_t open_event_ipc(const EventHandle& h, cudaEvent_t* out_evt) {
+  if (!out_evt) return cudaErrorInvalidValue;
+  cudaEvent_t evt;
+  auto st = cudaIpcOpenEventHandle(&evt, h.evt_handle);
+  if (st != cudaSuccess) return st;
+  *out_evt = evt;
+  return cudaSuccess;
+}
+
+cudaError_t record_event(cudaEvent_t evt, cudaStream_t stream) {
+  // stream==0 则记录在默认流
+  return cudaEventRecord(evt, stream);
+}
+
+cudaError_t stream_wait_event(cudaStream_t stream, cudaEvent_t evt) {
+  return cudaStreamWaitEvent(stream, evt, 0);
+}
+
+static inline bool range_src_ok(const RegionInfo& src, uint64_t off, uint64_t n) {
   if (off > src.bytes) return false;
   if (n > src.bytes) return false;
   if (off + n > src.bytes) return false;
@@ -105,8 +179,7 @@ cudaError_t read_async(const RegionInfo& src, void* dst_device,
                        uint64_t bytes, uint64_t src_off,
                        cudaStream_t stream) {
   if (!src.remote_ptr || !dst_device || bytes == 0) return cudaErrorInvalidValue;
-  if (!range_ok(src, src_off, bytes)) return cudaErrorInvalidValue;
-  // 直接 D2D 异步拷贝：若已启用 P2P，将走 NVLink/NVSwitch
+  if (!range_src_ok(src, src_off, bytes)) return cudaErrorInvalidValue;
   return cudaMemcpyAsync(dst_device,
                          static_cast<const char*>(src.remote_ptr) + src_off,
                          bytes, cudaMemcpyDeviceToDevice, stream);
