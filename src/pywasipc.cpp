@@ -203,35 +203,28 @@ PYBIND11_MODULE(pywasipc, m) {
   struct EventCap { cudaEvent_t evt{nullptr}; };
   py::class_<EventCap>(m, "EventCap");
 
+  // 使用 wasipc 的 create_event_ipc：返回 (cap, handle_bytes)
   m.def("create_event_ipc",
         [](bool disable_timing) {
-          unsigned int flags = cudaEventInterprocess;
-          if (disable_timing) flags |= cudaEventDisableTiming;
-          cudaEvent_t e{};
-          auto st = cudaEventCreateWithFlags(&e, flags);
-          if (st != cudaSuccess) throw std::runtime_error(cudaGetErrorString(st));
-          cudaIpcEventHandle_t handle{};
-          st = cudaIpcGetEventHandle(&handle, e);
-          if (st != cudaSuccess) {
-            cudaEventDestroy(e);
-            throw std::runtime_error(cudaGetErrorString(st));
-          }
-          EventCap cap; cap.evt = e;
-          py::bytes h(reinterpret_cast<const char*>(&handle), sizeof(handle));
-          return py::make_tuple(std::move(cap), std::move(h));
+          cudaEvent_t local_evt{};
+          wasipc::EventHandle h{};              // 注意：这是 wasipc.h 里定义的 struct
+          throw_if(wasipc::create_event_ipc(disable_timing, &local_evt, &h));
+          EventCap cap; cap.evt = local_evt;
+          // 将 EventHandle 整体序列化为 bytes，跨进程传递
+          py::bytes blob(reinterpret_cast<const char*>(&h), sizeof(h));
+          return py::make_tuple(std::move(cap), std::move(blob));
         },
         py::arg("disable_timing") = true);
 
   m.def("open_event_ipc",
         [](py::bytes handle_blob) {
           std::string blob = handle_blob;
-          if (blob.size() != sizeof(cudaIpcEventHandle_t))
-            throw std::runtime_error("invalid event handle size");
-          cudaIpcEventHandle_t h{};
+          if (blob.size() != sizeof(wasipc::EventHandle))
+            throw std::runtime_error("invalid wasipc::EventHandle bytes size");
+          wasipc::EventHandle h{};
           memcpy(&h, blob.data(), sizeof(h));
           cudaEvent_t e{};
-          auto st = cudaIpcOpenEventHandle(&e, h);
-          if (st != cudaSuccess) throw std::runtime_error(cudaGetErrorString(st));
+          throw_if(wasipc::open_event_ipc(h, &e));   // 打开事件 + 内部控制块
           EventCap cap; cap.evt = e;
           return cap;
         },
@@ -239,15 +232,16 @@ PYBIND11_MODULE(pywasipc, m) {
 
   m.def("record_event",
         [](const EventCap& cap, uint64_t stream) {
-          auto st = cudaEventRecord(cap.evt, as_stream(stream));
-          if (st != cudaSuccess) throw std::runtime_error(cudaGetErrorString(st));
+          // 走 wasipc 版本：会在内部按顺序更新 epoch，防止电平粘连
+          throw_if(wasipc::record_event(cap.evt, as_stream(stream)));
         },
         py::arg("cap"), py::arg("stream"));
 
   m.def("stream_wait_event",
         [](uint64_t stream, const EventCap& cap) {
-          auto st = cudaStreamWaitEvent(as_stream(stream), cap.evt, 0);
-          if (st != cudaSuccess) throw std::runtime_error(cudaGetErrorString(st));
+          // 走 wasipc 版本：边沿语义等待“下一轮”，不会被旧完成态满足
+          throw_if(wasipc::stream_wait_event(as_stream(stream), cap.evt));
         },
         py::arg("stream"), py::arg("cap"));
+
 }

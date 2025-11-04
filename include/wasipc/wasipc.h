@@ -68,6 +68,7 @@ cudaError_t readv_async(const RegionInfo& src, const ReadDesc* descs, int n);
 
 struct EventHandle {
   cudaIpcEventHandle_t evt_handle;
+  cudaIpcMemHandle_t   ctrl_mem;     // 新增：事件控制块（设备端 u32 epoch）
   int32_t abi_version;
 };
 
